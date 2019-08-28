@@ -109,7 +109,7 @@ def _allocate(hosts, np):
     return alloc_list
 
 
-def _launch_jobs(settings, host_alloc_plan, remote_host_names, _run_command):
+def _launch_jobs(settings, env, host_alloc_plan, remote_host_names, _run_command):
     """
     executes the jobs defined by run command on hosts.
     :param hosts_alloc: list of dict indicating the allocating info.
@@ -164,7 +164,8 @@ def _launch_jobs(settings, host_alloc_plan, remote_host_names, _run_command):
 
         host_name = alloc_info.hostname
 
-        env = os.environ.copy()
+        # TODO: Workaround for over-buffered outputs. Investigate how mpirun avoids this problem.
+        env['PYTHONUNBUFFERED'] = '1'
         local_command = '{horovod_env} {env} {run_command}' .format(
             horovod_env=horovod_rendez_env,
             env=' '.join(['%s=%s' % (key, quote(value)) for key, value in env.items()
@@ -194,7 +195,7 @@ def _launch_jobs(settings, host_alloc_plan, remote_host_names, _run_command):
                                            block_until_all_done=True)
 
 
-def gloo_run(settings, remote_host_names, common_intfs):
+def gloo_run(settings, remote_host_names, common_intfs, env):
     # allocate processes into slots
     host_alloc_plan = _allocate(settings.hosts, settings.num_proc)
 
@@ -219,7 +220,7 @@ def gloo_run(settings, remote_host_names, common_intfs):
         'HOROVOD_GLOO_RENDEZVOUS_PORT={port} '
         'HOROVOD_CONTROLLER=gloo '
         'HOROVOD_CPU_OPERATIONS=gloo '
-        'HOROVOD_IFACE={iface} '
+        'HOROVOD_GLOO_IFACE={iface} '
         'NCCL_SOCKET_IFNAME={common_intfs} '
         '{command}'  # expect a lot of environment variables
         .format(addr=server_ip,
@@ -228,5 +229,5 @@ def gloo_run(settings, remote_host_names, common_intfs):
                 common_intfs=','.join(common_intfs),
                 command=' '.join(quote(par) for par in settings.command)))
 
-    _launch_jobs(settings, host_alloc_plan, remote_host_names, run_command)
+    _launch_jobs(settings, env, host_alloc_plan, remote_host_names, run_command)
     return

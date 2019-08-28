@@ -121,8 +121,6 @@ Guides
 
    timeline_include
 
-   autotune_include
-
    troubleshooting_include
 
    contributors_include

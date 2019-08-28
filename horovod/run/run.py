@@ -14,37 +14,31 @@
 # ==============================================================================
 
 from __future__ import print_function
-
 import argparse
 import hashlib
 import os
 import sys
+import six
 import re
 import textwrap
-
-from socket import AF_INET
-from psutil import net_if_addrs
 try:
     from shlex import quote
 except ImportError:
     from pipes import quote
-
-import six
-import yaml
-
 import horovod
 
 from horovod.common.util import (extension_available,
                                  gloo_built, mpi_built,
                                  nccl_built, ddl_built, mlsl_built)
-from horovod.run.common.util import codec, config_parser, safe_shell_exec, timeout, secret
+from horovod.run.common.util import codec, safe_shell_exec, timeout, secret
 from horovod.run.common.util import settings as hvd_settings
 from horovod.run.driver import driver_service
 from horovod.run.task import task_service
 from horovod.run.util import cache, threads, network
 from horovod.run.gloo_run import gloo_run
 from horovod.run.mpi_run import mpi_run
-
+from socket import AF_INET
+from psutil import net_if_addrs
 
 # Cached information of horovodrun functions be stored in this directory
 CACHE_FOLDER = os.path.join(os.path.expanduser('~'), '.horovod')
@@ -265,126 +259,57 @@ def _driver_fn(all_host_names, local_host_names, settings):
         driver.shutdown()
 
 
-def check_build(verbose):
+class CheckBuildAction(argparse.Action):
+    def __call__(self, parser, args, values, option_string=None):
+        output = '''\
+        Horovod v{version}:
+        
+        Available Frameworks:
+          [{tensorflow}] TensorFlow
+          [{torch}] PyTorch
+          [{mxnet}] MXNet
+        
+        Available Controllers:
+          [{mpi}] MPI
+          [{gloo}] Gloo
+          
+        Available Tensor Operations:
+          [{nccl_ops}] NCCL
+          [{ddl_ops}] DDL
+          [{mlsl_ops}] MLSL
+          [{mpi_ops}] MPI
+          [{gloo_ops}] Gloo\
+        '''.format(version=horovod.__version__,
+                   tensorflow=CheckBuildAction.get_check(extension_available('tensorflow')),
+                   torch=CheckBuildAction.get_check(extension_available('torch')),
+                   mxnet=CheckBuildAction.get_check(extension_available('mxnet')),
+                   mpi=CheckBuildAction.get_check(mpi_built()),
+                   gloo=CheckBuildAction.get_check(gloo_built()),
+                   nccl_ops=CheckBuildAction.get_check(nccl_built()),
+                   ddl_ops=CheckBuildAction.get_check(ddl_built()),
+                   mpi_ops=CheckBuildAction.get_check(mpi_built()),
+                   mlsl_ops=CheckBuildAction.get_check(mlsl_built()),
+                   gloo_ops=CheckBuildAction.get_check(gloo_built()))
+        print(textwrap.dedent(output))
+        os._exit(0)
+
+    @staticmethod
     def get_check(value):
         return 'X' if value else ' '
 
-    output = '''{verbose_newline}\
-    Horovod v{version}:
-
-    Available Frameworks:
-        [{tensorflow}] TensorFlow
-        [{torch}] PyTorch
-        [{mxnet}] MXNet
-
-    Available Controllers:
-        [{mpi}] MPI
-        [{gloo}] Gloo
-
-    Available Tensor Operations:
-        [{nccl_ops}] NCCL
-        [{ddl_ops}] DDL
-        [{mlsl_ops}] MLSL
-        [{mpi_ops}] MPI
-        [{gloo_ops}] Gloo\
-    '''.format(verbose_newline='\n' if verbose else '',
-               version=horovod.__version__,
-               tensorflow=get_check(extension_available('tensorflow', verbose=verbose)),
-               torch=get_check(extension_available('torch', verbose=verbose)),
-               mxnet = get_check(extension_available('mxnet', verbose=verbose)),
-               mpi=get_check(mpi_built(verbose=verbose)),
-               gloo=get_check(gloo_built(verbose=verbose)),
-               nccl_ops=get_check(nccl_built(verbose=verbose)),
-               ddl_ops=get_check(ddl_built(verbose=verbose)),
-               mpi_ops=get_check(mpi_built(verbose=verbose)),
-               mlsl_ops=get_check(mlsl_built(verbose=verbose)),
-               gloo_ops=get_check(gloo_built(verbose=verbose)))
-    print(textwrap.dedent(output))
-    os._exit(0)
-
-
-def make_check_build_action(np_arg):
-    class CheckBuildAction(argparse.Action):
-        def __call__(self, parser, args, values, option_string=None):
-            # If -cb is specified, make -np optional
-            np_arg.required = False
-            args.check_build = True
-
-    return CheckBuildAction
-
-
-def make_override_action(override_args):
-    class StoreOverrideAction(argparse.Action):
-        def __init__(self,
-                     option_strings,
-                     dest,
-                     default=None,
-                     type=None,
-                     choices=None,
-                     required=False,
-                     help=None):
-            super(StoreOverrideAction, self).__init__(
-                option_strings=option_strings,
-                dest=dest,
-                nargs=1,
-                default=default,
-                type=type,
-                choices=choices,
-                required=required,
-                help=help)
-
-        def __call__(self, parser, args, values, option_string=None):
-            override_args.add(self.dest)
-            setattr(args, self.dest, values[0])
-
-    return StoreOverrideAction
-
-
-def make_override_bool_action(override_args, bool_value):
-    class StoreOverrideBoolAction(argparse.Action):
-        def __init__(self,
-                     option_strings,
-                     dest,
-                     required=False,
-                     help=None):
-            super(StoreOverrideBoolAction, self).__init__(
-                option_strings=option_strings,
-                dest=dest,
-                const=bool_value,
-                nargs=0,
-                default=None,
-                required=required,
-                help=help)
-
-        def __call__(self, parser, args, values, option_string=None):
-            override_args.add(self.dest)
-            setattr(args, self.dest, self.const)
-
-    return StoreOverrideBoolAction
-
-
-def make_override_true_action(override_args):
-    return make_override_bool_action(override_args, True)
-
-
-def make_override_false_action(override_args):
-    return make_override_bool_action(override_args, False)
-
 
 def parse_args():
-    override_args = set()
-    
     parser = argparse.ArgumentParser(description='Horovod Runner')
 
     parser.add_argument('-v', '--version', action='version', version=horovod.__version__,
                         help='Shows Horovod version.')
 
-    np_arg = parser.add_argument('-np', '--num-proc', action='store', dest='np',
-                                 type=int, required=True,
-                                 help='Total number of training processes.')
-
-    parser.add_argument('-cb', '--check-build', action=make_check_build_action(np_arg), nargs=0,
+    parser.add_argument('-cb', '--check-build', action=CheckBuildAction, nargs=0,
                         help='Shows which frameworks and libraries have been built into Horovod.')
+
+    parser.add_argument('-np', '--num-proc', action='store', dest='np',
+                        type=int, required=True,
+                        help='Total number of training processes.')
 
     parser.add_argument('-p', '--ssh-port', action='store', dest='ssh_port',
                         type=int, help='SSH port on all the hosts.')
@@ -414,137 +339,6 @@ def parse_args():
     parser.add_argument('command', nargs=argparse.REMAINDER,
                         help='Command to be executed.')
 
-    parser.add_argument('--config-file', action='store', dest='config_file',
-                        help='Path to YAML file containing runtime parameter configuration for Horovod. '
-                             'Note that this will override any command line arguments provided before '
-                             'this argument, and will be overridden by any arguments that come after it.')
-
-    group_params = parser.add_argument_group('tuneable parameter arguments')
-    group_params.add_argument('--fusion-threshold-mb', action=make_override_action(override_args),type=int,
-                              help='Fusion buffer threshold in MB. This is the maximum amount of '
-                                   'tensor data that can be fused together into a single batch '
-                                   'during allreduce / allgather. Setting 0 disables tensor fusion. '
-                                   '(default: 64)')
-    group_params.add_argument('--cycle-time-ms', action=make_override_action(override_args), type=float,
-                              help='Cycle time in ms. This is the delay between each tensor fusion '
-                                   'cycle. The larger the cycle time, the more batching, but the '
-                                   'greater latency between each allreduce / allgather operations. '
-                                   '(default: 5')
-    group_params.add_argument('--cache-capacity', action=make_override_action(override_args), type=int,
-                              help='Maximum number of tensor names that will be cached to reduce amount '
-                                   'of coordination required between workers before performing allreduce / '
-                                   'allgather. (default: 1024')
-
-    group_hierarchical_allreduce = group_params.add_mutually_exclusive_group()
-    group_hierarchical_allreduce.add_argument('--hierarchical-allreduce',
-                                              action=make_override_true_action(override_args),
-                                              help='Perform hierarchical allreduce between workers instead of '
-                                                   'ring allreduce. Hierarchical allreduce performs a local '
-                                                   'allreduce / gather within a host, then a parallel cross allreduce '
-                                                   'between equal local ranks across workers, and finally a '
-                                                   'local gather.')
-    group_hierarchical_allreduce.add_argument('--no-hierarchical-allreduce', dest='hierarchical_allreduce',
-                                              action=make_override_false_action(override_args),
-                                              help='Explicitly disable hierarchical allreduce to prevent autotuning '
-                                                   'from adjusting it.')
-
-    group_hierarchical_allgather = group_params.add_mutually_exclusive_group()
-    group_hierarchical_allgather.add_argument('--hierarchical-allgather',
-                                              action=make_override_true_action(override_args),
-                                              help='Perform hierarchical allgather between workers instead of '
-                                                   'ring allgather. See hierarchical allreduce for algorithm details.')
-    group_hierarchical_allgather.add_argument('--no-hierarchical-allgather', dest='hierarchical_allgather',
-                                              action=make_override_false_action(override_args),
-                                              help='Explicitly disable hierarchical allgather to prevent autotuning '
-                                                   'from adjusting it.')
-
-    group_autotune = parser.add_argument_group('autotune arguments')
-    group_autotune_enabled = group_autotune.add_mutually_exclusive_group()
-    group_autotune_enabled.add_argument('--autotune', action=make_override_true_action(override_args),
-                                        help='Perform autotuning to select parameter argument values that maximimize '
-                                             'throughput for allreduce / allgather. Any parameter explicitly set will '
-                                             'be held constant during tuning.')
-    group_autotune_enabled.add_argument('--no-autotune', dest='autotune',
-                                        action=make_override_false_action(override_args), help=argparse.SUPPRESS)
-    group_autotune.add_argument('--autotune-log-file', action=make_override_action(override_args),
-                                help='Comma-separated log of trials containing each hyperparameter and the '
-                                     'score of the trial. The last row will always contain the best value '
-                                     'found.')
-    group_autotune.add_argument('--autotune-warmup-samples', action=make_override_action(override_args),
-                                type=int, default=3,
-                                help='Number of samples to discard before beginning the optimization process '
-                                     'during autotuning. Performance during the first few batches can be '
-                                     'affected by initialization and cache warmups. (default: %(default)s)')
-    group_autotune.add_argument('--autotune-steps-per-sample', action=make_override_action(override_args),
-                                type=int, default=10,
-                                help='Number of steps (approximate) to record before observing a sample. The sample '
-                                     'score is defined to be the median score over all batches within the sample. The '
-                                     'more batches per sample, the less variance in sample scores, but the longer '
-                                     'autotuning will take. (default: %(default)s)')
-    group_autotune.add_argument('--autotune-bayes-opt-max-samples', action=make_override_action(override_args),
-                                type=int, default=20,
-                                help='Maximum number of samples to collect for each Bayesian optimization process. '
-                                     '(default: %(default)s)')
-    group_autotune.add_argument('--autotune-gaussian-process-noise', action=make_override_action(override_args),
-                                type=float, default=0.8,
-                                help='Regularization value [0, 1] applied to account for noise in samples. '
-                                     '(default: %(default)s)')
-
-    group_timeline = parser.add_argument_group('timeline arguments')
-    group_timeline.add_argument('--timeline-filename', action=make_override_action(override_args),
-                                help='JSON file containing timeline of Horovod events used for debugging '
-                                     'performance. If this is provided, timeline events will be recorded, '
-                                     'which can have a negative impact on training performance.')
-    group_timeline_cycles = group_timeline.add_mutually_exclusive_group()
-    group_timeline_cycles.add_argument('--timeline-mark-cycles', action=make_override_true_action(override_args),
-                                       help='Mark cycles on the timeline. Only enabled if the timeline filename '
-                                            'is provided.')
-    group_timeline_cycles.add_argument('--no-timeline-mark-cycles', dest='timeline_mark_cycles',
-                                       action=make_override_false_action(override_args), help=argparse.SUPPRESS)
-
-    group_stall_check = parser.add_argument_group('stall check arguments')
-    group_stall_check_enabled = group_stall_check.add_mutually_exclusive_group()
-    group_stall_check_enabled.add_argument('--no-stall-check', action=make_override_true_action(override_args),
-                                           help='Disable the stall check. The stall check will log a warning when '
-                                                'workers have stalled waiting for other ranks to submit tensors.')
-    group_stall_check_enabled.add_argument('--stall-check', dest='no_stall_check',
-                                           action=make_override_false_action(override_args), help=argparse.SUPPRESS)
-    group_stall_check.add_argument('--stall-check-warning-time-seconds', action=make_override_action(override_args),
-                                   type=int, default=60,
-                                   help='Seconds until the stall warning is logged to stderr. (default: %(default)s)')
-    group_stall_check.add_argument('--stall-check-shutdown-time-seconds', action=make_override_action(override_args),
-                                   type=int, default=0,
-                                   help='Seconds until Horovod is shutdown due to stall. Shutdown will only take '
-                                        'place if this value is greater than the warning time. (default: %(default)s)')
-
-    group_library_options = parser.add_argument_group('library arguments')
-    group_mpi_threads_disable = group_library_options.add_mutually_exclusive_group()
-    group_mpi_threads_disable.add_argument('--mpi-threads-disable', action=make_override_true_action(override_args),
-                                           help='Disable MPI threading support. Only applies when running in MPI '
-                                                'mode. In some cases, multi-threaded MPI can slow down other '
-                                                'components, but is necessary if you wish to run mpi4py on top '
-                                                'of Horovod.')
-    group_mpi_threads_disable.add_argument('--no-mpi-threads-disable', dest='mpi_threads_disable',
-                                           action=make_override_false_action(override_args), help=argparse.SUPPRESS)
-    group_library_options.add_argument('--num-nccl-streams', action=make_override_action(override_args),
-                                       type=int, default=1,
-                                       help='Number of NCCL streams. Only applies when running with NCCL support. '
-                                            '(default: %(default)s)')
-    group_library_options.add_argument('--mlsl-bgt-affinity', action=make_override_action(override_args),
-                                       type=int, default=0,
-                                       help='MLSL background thread affinity. Only applies when running with MLSL '
-                                            'support. (default: %(default)s)')
-
-    group_logging = parser.add_argument_group('logging arguments')
-    group_logging.add_argument('--log-level', action=make_override_action(override_args),
-                               choices=config_parser.LOG_LEVELS,
-                               help='Minimum level to log to stderr from the Horovod backend. (default: WARNING).')
-    group_logging_timestamp = group_logging.add_mutually_exclusive_group()
-    group_logging_timestamp.add_argument('--log-hide-timestamp', action=make_override_true_action(override_args),
-                                         help='Hide the timestamp from Horovod log messages.')
-    group_logging_timestamp.add_argument('--no-log-hide-timestamp', dest='log_hide_timestamp',
-                                         action=make_override_false_action(override_args), help=argparse.SUPPRESS)
-
     group_hosts_parent = parser.add_argument_group('host arguments')
     group_hosts = group_hosts_parent.add_mutually_exclusive_group()
     group_hosts.add_argument('-H', '--hosts', action='store', dest='hosts',
@@ -567,15 +361,9 @@ def parse_args():
                                   help='Run Horovod using the MPI controller. This will '
                                        'be the default if Horovod was built with MPI support.')
 
-    args = parser.parse_args()
+    parsed_args = parser.parse_args()
 
-    if args.config_file:
-        with open(args.config_file, 'r') as f:
-            config = yaml.load(f, Loader=yaml.FullLoader)
-        config_parser.set_args_from_config(args, config, override_args)
-    config_parser.validate_config_args(args)
-
-    return args
+    return parsed_args
 
 
 def parse_host_files(filename):
@@ -591,21 +379,18 @@ def parse_host_files(filename):
 def run():
     args = parse_args()
 
-    if args.check_build:
-        check_build(args.verbose)
-
     # if hosts are not specified, either parse from hostfile, or default as
     # localhost
     if not args.hosts:
         if args.hostfile:
-            args.hosts = parse_host_files(args.hostfile)
+            args.hosts = parse_host_files(args.hostfiles)
         else:
             # Set hosts to localhost if not specified
             args.hosts = 'localhost:{np}'.format(np=args.np)
 
     host_list = args.hosts.split(',')
     all_host_names = []
-    pattern = re.compile(r'^[\w.-]+:\d+$')
+    pattern = re.compile(r'^[\w-]+:\d+$')
     for host in host_list:
         if not pattern.match(host.strip()):
             raise ValueError('Invalid host input, please make sure it has '
@@ -699,27 +484,28 @@ def run():
         if settings.verbose >= 2:
             print('Local interface found ' + ' '.join(common_intfs))
 
-    env = os.environ.copy()
-    config_parser.set_env_from_args(env, args)
+    have_mpi = mpi_built()
+    have_gloo = gloo_built()
 
-    if args.use_gloo:
-        if not gloo_built(verbose=(settings.verbose >= 2)):
-            raise ValueError('Gloo support has not been built.  If this is not expected, ensure CMake is installed '
-                             'and reinstall Horovod with HOROVOD_WITH_GLOO=1 to debug the build error.')
-        gloo_run(settings, remote_host_names, common_intfs, env)
-    elif args.use_mpi:
-        if not mpi_built(verbose=(settings.verbose >= 2)):
-            raise ValueError('MPI support has not been built.  If this is not expected, ensure MPI is installed '
-                             'and reinstall Horovod with HOROVOD_WITH_MPI=1 to debug the build error.')
-        mpi_run(settings, common_intfs, env)
-    else:
-        if mpi_built(verbose=(settings.verbose >= 2)):
-            mpi_run(settings, common_intfs, env)
-        elif gloo_built(verbose=(settings.verbose >= 2)):
-            gloo_run(settings, remote_host_names, common_intfs, env)
+    if not args.use_gloo and not args.use_mpi:
+        if have_mpi:
+            args.use_mpi = True
+        elif have_gloo:
+            args.use_gloo = True
         else:
             raise ValueError('Neither MPI nor Gloo support has been built. Try reinstalling Horovod ensuring that '
                              'either MPI is installed (MPI) or CMake is installed (Gloo).')
+
+    if args.use_gloo:
+        if not have_gloo:
+            raise ValueError('Gloo support has not been built.  If this is not expected, ensure CMake is installed '
+                             'and reinstall Horovod with HOROVOD_WITH_GLOO=1 to debug the build error.')
+        gloo_run(settings, remote_host_names, common_intfs)
+    elif args.use_mpi:
+        if not have_mpi:
+            raise ValueError('MPI support has not been built.  If this is not expected, ensure MPI is installed '
+                             'and reinstall Horovod with HOROVOD_WITH_MPI=1 to debug the build error.')
+        mpi_run(settings, common_intfs)
 
 
 if __name__ == '__main__':

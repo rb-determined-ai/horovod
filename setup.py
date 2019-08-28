@@ -798,7 +798,7 @@ def find_matching_gcc_compiler_path(gxx_compiler_version):
             # gcc, or gcc-7, gcc-4.9, or gcc-4.8.5
             compiler = os.path.join(path_dir, bin_file)
             compiler_version = determine_gcc_version(compiler)
-            if compiler_version and compiler_version == gxx_compiler_version:
+            if compiler_version == gxx_compiler_version:
                 return compiler
 
     print('INFO: Unable to find gcc compiler (version %s).' % gxx_compiler_version)
@@ -1418,7 +1418,7 @@ class custom_build_ext(build_ext):
                 'None of TensorFlow, PyTorch, or MXNet plugins were built. See errors above.')
 
 
-require_list = ['cloudpickle', 'psutil', 'pyyaml', 'six']
+require_list = ['cloudpickle', 'psutil', 'six']
 
 # Skip cffi if pytorch extension explicitly disabled
 if not os.environ.get('HOROVOD_WITHOUT_PYTORCH'):

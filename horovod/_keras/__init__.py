@@ -73,12 +73,14 @@ def create_distributed_optimizer(keras, optimizer, name, device_dense, device_sp
                             elif isinstance(grad, tf.IndexedSlices):
                                 raise AssertionError(
                                     "IndexedSlices are not supported when `self._aggregation_frequency` > 1 and `self._sparse_as_dense is False")
-                            grad_aggregation_variable = tf.get_variable(
-                                grad_aggregation_variable_name, shape=grad.get_shape().as_list(),
-                                trainable=False, initializer=tf.zeros_initializer(),
-                                collections=[tf.GraphKeys.LOCAL_VARIABLES, "aggregating_collection"])
-                            self.gpu_shadow_vars.append(
-                                grad_aggregation_variable)
+                            print_op = tf.cond(tf.equal(idx, 0), lambda: tf.print("GRAD_AGG: INIT VARS"), tf.no_op)
+                            with tf.control_dependencies([print_op]):
+                                grad_aggregation_variable = tf.get_variable(
+                                    grad_aggregation_variable_name, shape=grad.get_shape().as_list(),
+                                    trainable=False, initializer=tf.zeros_initializer(),
+                                    collections=[tf.GraphKeys.LOCAL_VARIABLES, "aggregating_collection"])
+                                self.gpu_shadow_vars.append(
+                                    grad_aggregation_variable)
                         assert len(self.gpu_shadow_vars) == len(self.grads)
                     vars_init_op = tf.variables_initializer(
                         [self.counter, *self.gpu_shadow_vars])
@@ -90,9 +92,11 @@ def create_distributed_optimizer(keras, optimizer, name, device_dense, device_sp
                     grad_aggregation_variable_name = str(idx)
                     grad_aggregator = tf.get_variable(
                         grad_aggregation_variable_name)
-                    clear_op = grad_aggregator.assign(
-                        grad_aggregator.initial_value)
-                    clear_ops_list.append(clear_op)
+                    print_op = tf.cond(tf.equal(idx, 0), lambda: tf.print("GRAD_AGG: CLEAR GRADS"), tf.no_op)
+                    with tf.control_dependencies([print_op]):
+                        clear_op = grad_aggregator.assign(
+                            grad_aggregator.initial_value)
+                        clear_ops_list.append(clear_op)
                 return tf.group(*clear_ops_list)
 
             def aggregate_grads():
@@ -105,7 +109,9 @@ def create_distributed_optimizer(keras, optimizer, name, device_dense, device_sp
                         grad_aggregation_variable_name = str(idx)
                         grad_aggregator = tf.get_variable(
                             grad_aggregation_variable_name)
-                        update_op = grad_aggregator.assign_add(grad)
+                        print_op = tf.cond(tf.equal(idx, 0), lambda: tf.print("GRAD_AGG: AGG GRADS"), tf.no_op)
+                        with tf.control_dependencies([print_op]):
+                            update_op = grad_aggregator.assign_add(grad)
                         aggregation_ops_list.append(update_op)
                 return aggregation_ops_list
 
@@ -116,13 +122,15 @@ def create_distributed_optimizer(keras, optimizer, name, device_dense, device_sp
                     aggregation_read_ops_list = []
                     with tf.variable_scope("aggregation_variables", reuse=True):
                         for idx, grad in enumerate(self.gpu_shadow_vars):
-                            grad_aggregation_variable_name = str(idx)
-                            grad_aggregator = tf.get_variable(
-                                grad_aggregation_variable_name)
-                            aggregated_grads.append(
-                                grad_aggregator.read_value())
-                            aggregation_read_ops_list.append(
-                                aggregated_grads[idx])
+                            print_op = tf.cond(tf.equal(idx, 0), lambda: tf.print("GRAD_AGG: READ GRADS"), tf.no_op)
+                            with tf.control_dependencies([print_op]):
+                                grad_aggregation_variable_name = str(idx)
+                                grad_aggregator = tf.get_variable(
+                                    grad_aggregation_variable_name)
+                                aggregated_grads.append(
+                                    grad_aggregator.read_value())
+                                aggregation_read_ops_list.append(
+                                    aggregated_grads[idx])
                     aggregation_read_ops = tf.group(
                         *aggregation_read_ops_list)
                 else:
@@ -133,11 +141,13 @@ def create_distributed_optimizer(keras, optimizer, name, device_dense, device_sp
                     averaged_gradients = []
                     for idx, grad in enumerate(aggregated_grads):
                         if grad is not None:
-                            avg_grad = hvd.allreduce(grad,
-                                                     device_dense=self._device_dense,
-                                                     device_sparse=self._device_sparse,
-                                                     compression=self._compression)
-                            averaged_gradients.append(avg_grad)
+                            print_op = tf.cond(tf.equal(idx, 0), lambda: tf.print("GRAD_AGG: ALLREDUCE GRADS"), tf.no_op)
+                            with tf.control_dependencies([print_op]):
+                                avg_grad = hvd.allreduce(grad,
+                                                         device_dense=self._device_dense,
+                                                         device_sparse=self._device_sparse,
+                                                         compression=self._compression)
+                                averaged_gradients.append(avg_grad)
                         else:
                             averaged_gradients.append(None)
                     with tf.control_dependencies([g.op for g in averaged_gradients]):

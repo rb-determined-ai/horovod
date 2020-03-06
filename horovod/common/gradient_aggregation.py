@@ -110,6 +110,7 @@ class LocalGradientAggregationHelper:
         return aggregation_ops_list
 
     def _allreduce_grads_helper(self, grads):
+        print(f"_allreduce_grads_helper:0:{type(grads)}")
         if self.aggregation_frequency > 1:
             # Read in latest variables values.
             aggregated_grads = []
@@ -124,9 +125,11 @@ class LocalGradientAggregationHelper:
         else:
             aggregated_grads = grads
             aggregation_read_ops = tf.no_op()
+        print(f"_allreduce_grads_helper:1:{type(aggregated_grads)}")
 
         with tf.control_dependencies([aggregation_read_ops]):
             averaged_gradients = self._allreduce_grads(aggregated_grads)
+            print(f"_allreduce_grads_helper:2:{type(averaged_gradients)}")
             with tf.control_dependencies([g.op for g in averaged_gradients if g is not None]):
                 reset_op = self.counter.assign(
                     tf.constant(0), use_locking=True)
@@ -139,6 +142,7 @@ class LocalGradientAggregationHelper:
                         averaged_gradients,
                         gradient_divisor,
                     )
+                    print(f"_allreduce_grads_helper:3:{type(averaged_gradients)}")
                     return averaged_gradients
                 else:
                     # When grad updates are represented in `IndexedSlices`, we can not divide
@@ -148,6 +152,7 @@ class LocalGradientAggregationHelper:
                         tf.identity,
                         averaged_gradients,
                     )
+                    print(f"_allreduce_grads_helper:4:{type(averaged_gradients)}")
                     return averaged_gradients
 
     def compute_gradients(self, grads):
@@ -166,11 +171,13 @@ class LocalGradientAggregationHelper:
             if self.aggregation_frequency > 1:
                 grads = get_not_none_from_list(grads)
                 assert len(grads) == len(self.gpu_shadow_vars)
+                print(f"compute_gradients:1:{type(grads)}")
                 allreduced_grads = tf.cond(
                     tf.equal(self.counter, self.aggregation_frequency),
                     lambda: self._allreduce_grads_helper(grads),
                     lambda: grads,
                 )
+                print(f"compute_gradients:4:{type(allreduced_grads)}")
                 if not isinstance(allreduced_grads, (list, tuple)):
                     allreduced_grads = (allreduced_grads,)
                 assert len(allreduced_grads) == len(self.gpu_shadow_vars)
